@@ -15,8 +15,30 @@ app.secret_key = os.environ.get("APP_SECRET_KEY", secrets.token_hex(16))
 
 DEFAULT_REDIRECT_URI = "https://localhost:8888/callback"
 CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
+CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
+DEFAULT_SCOPES = " ".join(
+    [
+        "user-read-email",
+        "user-read-private",
+        "streaming",
+        "user-read-playback-state",
+        "user-modify-playback-state",
+        "user-read-currently-playing",
+        "playlist-read-private",
+        "playlist-read-collaborative",
+        "playlist-modify-private",
+        "playlist-modify-public",
+        "user-library-read",
+        "user-library-modify",
+        "user-follow-read",
+        "user-follow-modify",
+        "user-top-read",
+        "user-read-recently-played",
+        "app-remote-control",
+    ]
+)
 REDIRECT_URI = os.environ.get("SPOTIFY_REDIRECT_URI", DEFAULT_REDIRECT_URI)
-SCOPES = os.environ.get("SPOTIFY_SCOPES", "user-read-email")
+SCOPES = os.environ.get("SPOTIFY_SCOPES", DEFAULT_SCOPES)
 
 parsed_redirect = urlparse(REDIRECT_URI)
 DEFAULT_PORT = parsed_redirect.port or (443 if parsed_redirect.scheme == "https" else 80)
@@ -53,7 +75,23 @@ def index() -> Response:
                 <li><strong>Server port:</strong> {SERVER_PORT}</li>
                 <li><strong>HTTPS (adhoc certificate):</strong> {USE_ADHOC_HTTPS}</li>
             </ul>
-            <p><a href="{url_for('start_auth')}">Begin Authorization</a></p>
+            <form method="post" action="{url_for('start_auth')}">
+                <div>
+                    <label for="client_id">Client ID</label><br />
+                    <input name="client_id" id="client_id" type="text" value="{CLIENT_ID or ''}" required />
+                </div>
+                <div>
+                    <label for="client_secret">Client Secret (optional)</label><br />
+                    <input name="client_secret" id="client_secret" type="text" value="{CLIENT_SECRET or ''}" />
+                </div>
+                <div>
+                    <label for="scopes">Scopes (space separated)</label><br />
+                    <textarea name="scopes" id="scopes" rows="4" cols="80">{SCOPES}</textarea>
+                </div>
+                <div>
+                    <button type="submit">Begin Authorization</button>
+                </div>
+            </form>
             {f'<p style="color:red;">Missing env var: {missing}</p>' if missing else ''}
         </body>
     </html>
@@ -61,9 +99,13 @@ def index() -> Response:
     return Response(content, mimetype="text/html")
 
 
-@app.route("/login")
+@app.route("/login", methods=["GET", "POST"])
 def start_auth():
-    if not CLIENT_ID:
+    client_id = (request.form.get("client_id") or CLIENT_ID or "").strip()
+    client_secret = (request.form.get("client_secret") or CLIENT_SECRET or "").strip()
+    scopes = (request.form.get("scopes") or SCOPES or "").strip()
+
+    if not client_id:
         return jsonify({"error": "SPOTIFY_CLIENT_ID is not configured."}), 400
 
     state = secrets.token_urlsafe(16)
@@ -72,11 +114,14 @@ def start_auth():
 
     session["state"] = state
     session["verifier"] = verifier
+    session["client_id"] = client_id
+    session["client_secret"] = client_secret
+    session["scopes"] = scopes
 
     auth_url = (
         "https://accounts.spotify.com/authorize"
-        f"?response_type=code&client_id={quote(CLIENT_ID)}"
-        f"&scope={quote(SCOPES)}"
+        f"?response_type=code&client_id={quote(client_id)}"
+        f"&scope={quote(scopes)}"
         f"&redirect_uri={quote(REDIRECT_URI)}"
         f"&state={quote(state)}"
         "&code_challenge_method=S256"
@@ -97,14 +142,19 @@ def handle_callback():
         return jsonify({"error": "Authorization code not found in callback."}), 400
 
     verifier = session.get("verifier")
-    session.pop("state", None)
-    session.pop("verifier", None)
-
     payload = {
         "authorization_code": code,
         "code_verifier": verifier,
         "redirect_uri": REDIRECT_URI,
+        "client_id": session.get("client_id"),
+        "client_secret": session.get("client_secret"),
+        "scopes": session.get("scopes", SCOPES),
     }
+    session.pop("state", None)
+    session.pop("verifier", None)
+    session.pop("client_id", None)
+    session.pop("client_secret", None)
+    session.pop("scopes", None)
     return jsonify(payload)
 
 
